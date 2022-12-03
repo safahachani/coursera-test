@@ -1,0 +1,328 @@
+using Pkg
+Pkg.installed()
+
+
+import Pkg
+Pkg.add("JuMP")
+Pkg.add("vOptGeneric")
+Pkg.add("Graphs")
+Pkg.add("GraphPlot")
+
+
+Pkg.add("GLPK")
+# On Windows, this might be
+ENV["GUROBI_HOME"] = "C:\\gurobi1000\\win64"
+
+Pkg.add("Gurobi")
+Pkg.build("Gurobi")
+
+
+using Gurobi
+using JuMP
+using vOptGeneric
+using Graphs
+using GraphPlot
+
+
+
+####################all input#######################
+lv=9
+lT=3
+I=1:lv
+J=1:lT
+JX=1:lT-1
+reservedbattery=6
+eactive=0.05
+esleep=0.01
+em=2
+ec=1
+#####################################################
+
+######################create digraph##################
+
+G1 = DiGraph(lv, 0) # graph with lv vertices and 0 edges
+# Make a line
+add_edge!(G1, 3, 1)
+add_edge!(G1, 4, 1)
+add_edge!(G1, 4, 3)
+ add_edge!(G1, 6, 4)
+ add_edge!(G1, 9, 4)
+ add_edge!(G1, 9, 8)
+ add_edge!(G1, 8, 7)
+ add_edge!(G1, 8, 6)
+ add_edge!(G1, 7, 6)
+add_edge!(G1, 7, 5)
+add_edge!(G1, 5, 2)
+add_edge!(G1, 5, 3)
+add_edge!(G1, 2, 1)
+ add_edge!(G1, 6, 5)
+ add_edge!(G1, 6, 3)
+gplot(G1, nodelabel=1:lv)  
+########################################################
+
+######################my opt##########################
+
+SM = vModel() # SM stands for OPT Model
+# set_optimizer(SM,GLPK.Optimizer)
+set_optimizer(SM,Gurobi.Optimizer)
+
+
+
+
+# all variable
+@variable(SM,xm[i in I,j in J],Bin)
+@variable(SM, xr[i in I,j in J],Bin)
+@variable(SM, ya[i in I,j in J],Bin)
+@variable(SM, ys[i in I,j in J],Bin)
+
+
+# constraint 12
+@constraint(SM, [i=I,j=J], ya[i,j] <=1-xm[i,j])
+# constraint 13
+@constraint(SM, [i=I,j=JX], ya[i,j] <=xm[i,j+1])
+# constraint 14
+@constraint(SM, [i=I,j=JX], ya[i,j] >=xm[i,j+1]-xm[i,j]) 
+# constraint 15
+@constraint(SM, [i=I,j=J], ys[i,j] <=xm[i,j]) 
+# constraint 16
+@constraint(SM, [i=I,j=J], ys[i,j] <=1-xm[i,j]) 
+# constraint 17
+@constraint(SM, [i=I,j=JX], ys[i,j] >=xm[i,j]-xm[i,j+1]) 
+
+
+# constraint 8
+function sum1()
+ t=[]
+ sum=0
+ for i in range(1,lv)
+ 
+   sum=0
+   for j in range(1,lT)
+        sum=sum+em*xm[i,j]+ec*xr[i,j]
+     end
+     push!(t,sum)
+ end
+return t
+end
+
+mysum1=sum1()
+
+function sum2()
+ t=[]
+ sum=0
+ for i in range(1,lv)
+ 
+   sum=0
+   for j in range(1,lT-1)
+        sum=sum+eactive*ya[i,j]+esleep*ys[i,j]
+     end
+     push!(t,sum)
+ end
+return t 
+end
+mysum2=sum2()
+
+
+function concatsum()
+ t=[]
+ for i in range(1,lv)
+ push!(t,sum(mysum1[i]+mysum2[i]))
+ end
+return(t)
+end
+
+concatsum()
+
+@constraint(SM, [i=I], concatsum()[i]<=reservedbattery) 
+#####################
+
+# constraint 9
+###################################
+function listofedge()
+ mye=[]
+ for e in edges(G1)
+     push!(mye,[src(e),dst(e)])
+ end
+ return(mye)
+end
+listofedge()
+
+
+function con9()
+ t=[]
+ for j in range(1,lT)
+
+ for i in range(1,length( listofedge())) 
+         vi=listofedge()[i][1]
+         vk=listofedge()[i][2]
+
+       
+  push!(t,xm[vi,j]+xm[vk,j])
+ end 
+end
+
+return(t)
+ end
+ con9()
+ t9=con9()
+
+ @constraint(SM,[dd=1:length(con9())],t9[dd]>=1) 
+
+############################################################   
+
+# constraint 10
+############################################################
+
+function listofparent(G1,v)
+ lp=[]
+ lp1=outneighbors(G1,v)
+ for i in range(1,length(lp1))
+   outneighbors(G1,outneighbors(G1,v)[i])
+   long=length(outneighbors(G1,outneighbors(G1,v)[i]))
+   if long==0
+     push!(lp,outneighbors(G1,v)[i])
+   else
+   
+  
+     for j in range(1,long) 
+     if outneighbors(G1,outneighbors(G1,v)[i])[j]∉ lp1
+     push!(lp,outneighbors(G1,v)[i])
+     else 
+       if outneighbors(G1,outneighbors(G1,v)[i])[j]∈ lp1
+         
+         # remove all from it 
+         deleteat!(lp, findall(x->x==outneighbors(G1,v)[i],lp))
+       end
+     end 
+   end
+      end
+     end
+     return(lp∪lp)
+   end
+
+
+listofparent(G1,1)
+listofparent(G1,1)==[]
+listofparent(G1,2)!=[]
+
+
+function con10()
+ t=[]
+ for j in range(1,lT)
+   
+   for i in range(1,lv)
+     added=0
+     if listofparent(G1,i)!=[]
+         l=length(listofparent(G1,i))
+         
+         for y in range(1,l)
+           x=listofparent(G1,i)[y]
+           added=added+xm[x,j]+xr[x,j]
+          
+         end  
+         push!(t,xm[i,j]-added)
+     end
+ 
+
+
+   end
+ end
+ return(t)
+end
+con10()
+t10=con10()
+
+
+@constraint(SM,[dd=1:length(con10())],t10[dd]<=0)
+##############################################
+# constraint 11
+############################################################
+
+function con11()
+ t=[]
+   for j in range(1,lT)
+     
+     for i in range(1,lv)
+       added=0
+       if listofparent(G1,i)!=[]
+           l=length(listofparent(G1,i))
+           
+           for y in range(1,l)
+             x=listofparent(G1,i)[y]
+             added=added+xm[x,j]+xr[x,j]
+            
+           end  
+           push!(t,xr[i,j]-added)
+       end
+   
+  
+
+     end
+   end
+   return(t)
+end
+con11()
+t11=con11()
+
+
+@constraint(SM,[dd=1:length(con11())],t11[dd]<=0)
+
+###################objective#############################
+CC=concatsum()
+
+@addobjective(SM, Min, CC[1])
+@addobjective(SM, Min, CC[2])
+@addobjective(SM, Min, CC[3])
+@addobjective(SM, Min, CC[4])
+@addobjective(SM, Min, CC[5])
+@addobjective(SM, Min, CC[6])
+@addobjective(SM, Min, CC[7])
+@addobjective(SM, Min, CC[8])
+@addobjective(SM, Min, CC[9])
+
+
+###################result#############################
+
+optimize!(SM)
+SM
+
+# ---- Invoking the solver 
+
+
+# ---- Querying the results
+# Y_N = getY_N( SM )
+# printX_E(  SM  )
+
+
+vSolve(SM, method=:dichotomy )
+
+Y_N = getY_N(SM)
+length(Y_N)
+printX_E(SM)
+
+
+
+value.(xm, 1)
+value.(xr, 1)
+value.(ya, 1)
+value.(ys, 1)
+
+value.(xm, 2)
+value.(xr, 2)
+value.(ya, 2)
+value.(ys, 2)
+
+# println("xm = ", value.(xm, 1) )
+# println("xr = ", value.(xr, 1) )
+# println("ya = ", value.(ya, 1) )
+# println("ys = ", value.(ys, 1) )
+
+# println("xm = ", value.(xm, 2) )
+# println("xr = ", value.(xr, 2) )
+# println("ya = ", value.(ya, 2) )
+# println("ys = ", value.(ys, 2) )
+
+objective_value(SM)
+objective_sense(SM)
+
+# epsilon | dichotomy | chalmet | lexico) )
